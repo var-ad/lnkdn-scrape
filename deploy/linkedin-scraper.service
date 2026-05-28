@@ -1,0 +1,12 @@
+[Unit]
+Description=LinkedIn job scraper daily run
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/linkedin-scraper
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/linkedin-scraper/.venv/bin/python /opt/linkedin-scraper/main.py --date past-24h
+StandardOutput=append:/opt/linkedin-scraper/logs/scraper.log
+StandardError=append:/opt/linkedin-scraper/logs/scraper.log

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run LinkedIn job scraper every day at 6:45 PM IST
+
+[Timer]
+OnCalendar=*-*-* 18:45:00 Asia/Kolkata
+Persistent=true
+Unit=linkedin-scraper.service
+
+[Install]
+WantedBy=timers.target

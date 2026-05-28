@@ -1,0 +1,9 @@
+.env
+.linkedin_session.json
+service_account.json
+*.json
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+logs/
