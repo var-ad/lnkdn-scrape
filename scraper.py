@@ -7,7 +7,9 @@ and return raw post data (text + metadata) for further extraction.
 import time
 import json
 import re
+from datetime import datetime, timedelta
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 import config
@@ -48,6 +50,37 @@ def _normalize_post_url(card, href: str = "") -> str:
         return href.split("?")[0]
 
     return ""
+
+
+def _normalize_post_date(raw_date: str, date_filter: str = "") -> str:
+    """Return YYYY-MM-DD when LinkedIn gives datetime, relative labels, or nothing."""
+    raw_date = (raw_date or "").strip()
+    today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
+
+    if not raw_date:
+        return today.isoformat() if date_filter == "past-24h" else ""
+
+    if re.match(r"^\d{4}-\d{2}-\d{2}", raw_date):
+        return raw_date[:10]
+
+    text = raw_date.lower()
+    match = re.search(r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\b", text)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith(("s", "m", "h")):
+            return today.isoformat()
+        if unit.startswith("d"):
+            return (today - timedelta(days=amount)).isoformat()
+        if unit.startswith("w"):
+            return (today - timedelta(weeks=amount)).isoformat()
+
+    if "yesterday" in text:
+        return (today - timedelta(days=1)).isoformat()
+    if "today" in text or "now" in text:
+        return today.isoformat()
+
+    return raw_date
 
 
 def _save_session(context):
@@ -92,13 +125,14 @@ def _build_search_url(query: str, date_filter: str) -> str:
     datePosted: past-24h | past-week
     """
     encoded = quote_plus(query)
+    encoded_date_filter = quote_plus(json.dumps([date_filter]))
     return (
         f"https://www.linkedin.com/search/results/content/"
-        f"?keywords={encoded}&datePosted={date_filter}&origin=FACETED_SEARCH"
+        f"?keywords={encoded}&datePosted={encoded_date_filter}&origin=FACETED_SEARCH"
     )
 
 
-def _extract_posts_from_page(page) -> list[dict]:
+def _extract_posts_from_page(page, date_filter: str = "") -> list[dict]:
     """Extract all visible post cards from the current page state."""
     posts = []
     cards = page.query_selector_all(POST_CONTAINER)
@@ -147,8 +181,11 @@ def _extract_posts_from_page(page) -> list[dict]:
                 el = card.query_selector(sel.strip())
                 if el:
                     post_date = (el.get_attribute("datetime") or
+                                 el.get_attribute("aria-label") or
+                                 el.get_attribute("title") or
                                  el.inner_text().strip())
                     break
+            post_date = _normalize_post_date(post_date, date_filter)
 
             # ── Post URL ────────────────────────────────────────────────────
             link = ""
@@ -233,7 +270,7 @@ def scrape_query(query: str, date_filter: str = None) -> list[dict]:
         time.sleep(2)
 
         for round_num in range(config.MAX_SCROLL_ROUNDS):
-            new_posts = _extract_posts_from_page(page)
+            new_posts = _extract_posts_from_page(page, date_filter)
             added = 0
             for p_data in new_posts:
                 # Deduplicate by first 120 chars of text

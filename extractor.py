@@ -6,7 +6,9 @@ Parse raw LinkedIn posts into structured job records via Gemini.
 import json
 import re
 import time
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
@@ -100,8 +102,12 @@ def _is_relevant_tech_job(data: dict) -> bool:
 
 
 def _to_sheet_job(data: dict, post: dict) -> dict:
+    post_date = post.get("date", "")[:10]
+    if not post_date:
+        post_date = datetime.now(ZoneInfo(config.TIMEZONE)).date().isoformat()
+
     return {
-        "Post Date":          post.get("date", "")[:10],
+        "Post Date":          post_date,
         "Company":            data.get("company") or "",
         "Job Title":          data.get("job_title") or "",
         "Job Type":           data.get("job_type") or "",
@@ -140,6 +146,9 @@ Rules:
 - If no company is identifiable, use null.
 - job_type: one of "Full-Time", "Internship", "Contract", "Freelance".
 - location: city name or "Remote" or "Hybrid"; prefer Indian cities.
+- Skip any role that is SDE 2, SDE 3, Senior, Lead, Principal, Staff, or above.
+- Skip QA, testing, test engineer, support, and operations roles.
+- Skip SAP and ServiceNow roles entirely.
 - salary: only if explicitly stated; null otherwise.
 - apply_link: URL or email to apply; null if not present.
 - skills: comma-separated; null if not mentioned.

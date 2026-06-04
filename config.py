@@ -55,19 +55,77 @@ HEADLESS_BROWSER = _env_bool("HEADLESS_BROWSER", False)
 # --- Search queries ---
 # LinkedIn content search: https://www.linkedin.com/search/results/content/?keywords=...
 SEARCH_QUERIES = [
-    "is hiring fresher",
-    "hiring SDE 1",
-    "hiring software engineer fresher",
-    "hiring intern 2025 email",
-    "hiring intern 2026 apply form",
-    "fresher hiring Pune",
-    "fresher hiring Bangalore",
-    "fresher hiring Hyderabad",
-    "fresher hiring India remote",
-    "SDE1 opening fresher apply",
-    "new grad software engineer hiring",
-    "entry level software engineer hiring India",
-    "hiring junior developer India",
+    # Freshers / New Grad
+    "fresher software engineer hiring",
+    "new grad software engineer",
+    "entry level software engineer",
+    "junior software engineer hiring",
+    "associate software engineer",
+    "graduate engineer trainee software",
+
+    # Batch-specific
+    "2026 batch hiring",
+    "off campus hiring 2026",
+    "off campus drive software engineer",
+
+    # SDE Roles
+    "SDE 1 hiring",
+    "SDE1 opening",
+    "backend engineer 0-2 years",
+    "frontend engineer 0-2 years",
+    "full stack engineer 0-2 years",
+
+    # Experience Range
+    "0-1 years experience software engineer",
+    "0-2 years software engineer",
+    "early career software engineer",
+
+    # Internships
+    "software engineer intern hiring",
+    "backend intern hiring",
+    "paid software internship India",
+
+    # Backend / Stack
+    "backend engineer hiring India",
+    "nodejs developer hiring India",
+    "python developer hiring India",
+    "golang developer hiring India",
+    "full stack developer hiring India",
+    "mern developer hiring",
+
+    # Startup Signals
+    "we are hiring software engineer",
+    "join our engineering team",
+    "looking for software engineers",
+    "startup hiring engineers India",
+    "founding engineer hiring",
+
+    # Referral Signals
+    "referral software engineer",
+    "happy to refer software engineer",
+    "DM for referral software engineer",
+    "can refer software engineer",
+
+    # Application Signals
+    "apply now software engineer India",
+    "software engineer apply email",
+
+    # India / Remote
+    "software engineer hiring India",
+    "remote software engineer India",
+    "work from home software engineer India",
+    "remote backend engineer India",
+
+    # Cities
+    "software engineer Pune hiring",
+    "software engineer Bangalore hiring",
+    "software engineer Bengaluru hiring",
+    "software engineer Hyderabad hiring",
+
+    # Hidden Gems
+    "join our team engineering India",
+    "software engineer opportunities India",
+    "software developer opportunities India",
 ]
 
 # --- Google Sheets columns (order matters) ---
