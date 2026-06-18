@@ -52,6 +52,12 @@ SCROLL_DELAY = float(os.getenv("SCROLL_DELAY", "2.5"))
 # Browser mode. Use HEADLESS_BROWSER=true for cloud deployments.
 HEADLESS_BROWSER = _env_bool("HEADLESS_BROWSER", False)
 
+# Playwright timeouts in milliseconds.
+NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "60000"))
+FEED_WAIT_TIMEOUT = int(os.getenv("FEED_WAIT_TIMEOUT", "30000"))
+SELECTOR_WAIT_TIMEOUT = int(os.getenv("SELECTOR_WAIT_TIMEOUT", "20000"))
+LOGIN_WAIT_TIMEOUT = int(os.getenv("LOGIN_WAIT_TIMEOUT", "120000"))
+
 # --- Search queries ---
 # LinkedIn content search: https://www.linkedin.com/search/results/content/?keywords=...
 SEARCH_QUERIES = [

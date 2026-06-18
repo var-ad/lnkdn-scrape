@@ -17,7 +17,7 @@ import config
 
 # ── Selectors — verified May 2026 via debug_scraper.py ─────────────────────
 # Each search result post card
-POST_CONTAINER   = "div.feed-shared-update-v2"
+POST_CONTAINER = "div._7b2ee40b"  # update selector
 
 # Post body text — LinkedIn wraps text in span[dir=ltr] inside the update
 POST_TEXT_SEL    = "div.feed-shared-update-v2__description span[dir='ltr'], \
@@ -44,7 +44,7 @@ def _normalize_post_url(card, href: str = "") -> str:
     urn = card.get_attribute("data-urn") or ""
     match = re.search(r"urn:li:activity:\d+", href) or re.search(r"urn:li:activity:\d+", urn)
     if match:
-        return f"/feed/update/{match.group(0)}/"
+        return f"https://linkedin.com/feed/update/{match.group(0)}/"
 
     if href:
         return href.split("?")[0]
@@ -102,20 +102,24 @@ def _load_session_if_exists():
 def _login(page):
     """Perform LinkedIn email/password login."""
     print("[scraper] Logging in to LinkedIn...")
-    page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+    page.goto(
+        "https://www.linkedin.com/login",
+        wait_until="domcontentloaded",
+        timeout=config.NAVIGATION_TIMEOUT,
+    )
     page.fill("#username", config.LINKEDIN_EMAIL)
     page.fill("#password", config.LINKEDIN_PASSWORD)
     page.click("button[type='submit']")
 
     # Wait for feed or checkpoint
     try:
-        page.wait_for_url("**/feed/**", timeout=15_000)
+        page.wait_for_url("**/feed/**", timeout=config.LOGIN_WAIT_TIMEOUT // 4)
         print("[scraper] Login successful.")
     except PlaywrightTimeout:
         # Could be 2FA / captcha — pause for manual intervention
         print("[scraper] ⚠️  Login didn't reach feed. Manual action needed (2FA / CAPTCHA).")
-        print("[scraper]    Waiting 60s for you to complete it in the browser window...")
-        page.wait_for_url("**/feed/**", timeout=60_000)
+        print("[scraper]    Waiting 2 mins for you to complete it in the browser window...")
+        page.wait_for_url("**/feed/**", timeout=config.LOGIN_WAIT_TIMEOUT)
         print("[scraper] Continuing after manual step.")
 
 
@@ -133,82 +137,65 @@ def _build_search_url(query: str, date_filter: str) -> str:
 
 
 def _extract_posts_from_page(page, date_filter: str = "") -> list[dict]:
-    """Extract all visible post cards from the current page state."""
     posts = []
-    cards = page.query_selector_all(POST_CONTAINER)
 
-    for card in cards:
-        try:
-            # ── Text ────────────────────────────────────────────────────────
-            # Try specific selectors first; fall back to full card innerText
-            text = ""
-            for sel in POST_TEXT_SEL.split(","):
-                sel = sel.strip()
-                els = card.query_selector_all(sel)
-                text = " ".join(el.inner_text() for el in els if el.inner_text().strip())
-                if len(text) > 40:
-                    break
+    # Use JS to find all post cards by "Feed post" text, but keep only the
+    # smallest matching wrapper so parent containers do not duplicate posts.
+    raw_cards = page.evaluate("""
+        () => {
+            const results = [];
+            const seen = new Set();
+            const candidates = Array.from(document.querySelectorAll('div._7b2ee40b'))
+                .filter(el => el.innerText?.trim().startsWith('Feed post'))
+                .filter(el => el.innerText?.trim().length > 100);
 
-            if len(text) < 40:
-                # Fallback: grab all text inside the card and strip nav noise
-                raw = card.inner_text()
-                # Drop the first line ("Feed post") and nav-like short lines
-                lines = [l.strip() for l in raw.splitlines()
-                         if len(l.strip()) > 30]
-                text = " ".join(lines)
+            // Sort by text length ascending — smallest = innermost card
+            candidates.sort((a, b) => a.innerText.length - b.innerText.length);
 
-            if len(text) < 40:
-                continue
+            for (const el of candidates) {
+                const text = el.innerText.trim();
+                const key = text.slice(0, 80);
+                if (seen.has(key)) continue;
+                seen.add(key);
 
-            # ── Poster name ─────────────────────────────────────────────────
-            poster = ""
-            for sel in ACTOR_NAME_SEL.split(","):
-                el = card.query_selector(sel.strip())
-                if el:
-                    poster = el.inner_text().strip()
-                    break
-            # fallback: first line of innerText that isn't "Feed post"
-            if not poster:
-                for line in card.inner_text().splitlines():
-                    line = line.strip()
-                    if line and line != "Feed post" and len(line) > 2:
-                        poster = line
-                        break
+                let url = '';
+                for (const a of el.querySelectorAll('a')) {
+                    const href = a.getAttribute('href') || '';
+                    if (href.includes('/posts/') || href.includes('activity')
+                        || href.includes('ugcPost') || href.includes('/feed/update/')) {
+                        url = href.split('?')[0];
+                        break;
+                    }
+                }
+                const timeEl = el.querySelector('time');
+                const date = timeEl?.getAttribute('datetime') || timeEl?.innerText || '';
+                const lines = text.split('\\n').map(l => l.trim()).filter(Boolean);
+                results.push({
+                    poster: lines[1] || '',
+                    text: lines.slice(3).join(' '),
+                    date: date,
+                    url: url
+                });
+            }
+            return results;
+        }
+    """)
 
-            # ── Date ────────────────────────────────────────────────────────
-            post_date = ""
-            for sel in POST_DATE_SEL.split(","):
-                el = card.query_selector(sel.strip())
-                if el:
-                    post_date = (el.get_attribute("datetime") or
-                                 el.get_attribute("aria-label") or
-                                 el.get_attribute("title") or
-                                 el.inner_text().strip())
-                    break
-            post_date = _normalize_post_date(post_date, date_filter)
-
-            # ── Post URL ────────────────────────────────────────────────────
-            link = ""
-            anchors = card.query_selector_all("a")
-            for a in anchors:
-                href = a.get_attribute("href") or ""
-                if any(p in href for p in POST_LINK_PATTERNS):
-                    link = _normalize_post_url(card, href)
-                    break
-
-            if not link:
-                link = _normalize_post_url(card)
-
-            posts.append({
-                "text": text,
-                "poster": poster,
-                "date": post_date,
-                "url": link,
-            })
-
-        except Exception as e:
-            print(f"[scraper]   card parse error: {e}")
+    for card in (raw_cards or []):
+        text = card.get("text", "")
+        if len(text) <= 40:
             continue
+
+        card_date = _normalize_post_date(card.get("date", ""), date_filter)
+        if not card_date and date_filter == "past-24h":
+            card_date = datetime.now(ZoneInfo(config.TIMEZONE)).date().isoformat()
+
+        posts.append({
+            "text": text,
+            "poster": card.get("poster", ""),
+            "date": card_date,
+            "url": card.get("url", ""),
+        })
 
     return posts
 
@@ -251,7 +238,11 @@ def scrape_query(query: str, date_filter: str = None) -> list[dict]:
             _save_session(context)
         else:
             # Quick check: hit the feed and confirm we're logged in
-            page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
+            page.goto(
+                "https://www.linkedin.com/feed/",
+                wait_until="domcontentloaded",
+                timeout=config.NAVIGATION_TIMEOUT,
+            )
             if "login" in page.url:
                 print("[scraper] Session expired, re-logging in...")
                 _login(page)
@@ -259,11 +250,11 @@ def scrape_query(query: str, date_filter: str = None) -> list[dict]:
 
         # ── Search ──────────────────────────────────────────────────────────
         print(f"[scraper] Searching: '{query}'")
-        page.goto(url, wait_until="domcontentloaded")
+        page.goto(url, wait_until="domcontentloaded", timeout=config.NAVIGATION_TIMEOUT)
 
         # Wait for at least one post card to render (up to 10s)
         try:
-            page.wait_for_selector(POST_CONTAINER, timeout=10_000)
+            page.wait_for_selector(POST_CONTAINER, timeout=config.SELECTOR_WAIT_TIMEOUT)
         except PlaywrightTimeout:
             print("[scraper]   No post cards found after waiting — check login / selectors.")
 
@@ -283,9 +274,17 @@ def scrape_query(query: str, date_filter: str = None) -> list[dict]:
             print(f"[scraper]   scroll {round_num+1}/{config.MAX_SCROLL_ROUNDS} — "
                   f"+{added} new posts (total: {len(all_posts)})")
 
-            # Scroll to bottom
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(config.SCROLL_DELAY)
+            # Scroll the finite-scroll container when LinkedIn uses one.
+            page.evaluate("""
+                () => {
+                    const scrollable = document.querySelector('div.scaffold-finite-scroll__content')
+                                    || document.querySelector('main')
+                                    || document.body;
+                    scrollable.scrollTop = scrollable.scrollHeight;
+                    window.scrollBy(0, 800);
+                }
+            """)
+            time.sleep(config.SCROLL_DELAY + 1)
 
             # Check for "No more results"
             no_more = page.query_selector("div.search-no-results__container")

@@ -18,7 +18,7 @@ import config
 genai.configure(api_key=config.GEMINI_API_KEY)
 
 MODEL = "gemini-3.1-flash-lite"   # good for structured extraction, but can fallback to 2.0 if it fails to parse JSON
-FALLBACK_MODEL = "gemini-2.0-flash"
+FALLBACK_MODEL = "gemma-4-26B-A4B-it"
 
 RATE_LIMIT = 14        # stay under Gemini free-tier 15 req/min with buffer
 MAX_RETRIES = 3
@@ -149,6 +149,8 @@ Rules:
 - Skip any role that is SDE 2, SDE 3, Senior, Lead, Principal, Staff, or above.
 - Skip QA, testing, test engineer, support, and operations roles.
 - Skip SAP and ServiceNow roles entirely.
+- Skip any role requiring more than 2 year of experience.
+- Skip roles mentioning experience ranges such as "2-5 years", "3-5 years", "5-10 years", "2+ years", "3+ years", or any range whose upper bound exceeds 2 year.
 - salary: only if explicitly stated; null otherwise.
 - apply_link: URL or email to apply; null if not present.
 - skills: comma-separated; null if not mentioned.
@@ -176,6 +178,9 @@ def _build_batch_prompt(posts: list[dict]) -> str:
         "INPUT_POSTS_JSON_END"
     )
 
+def chunked(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
 
 def _generate_json_payload(prompt: str) -> Any | None:
     model_names = [MODEL]
@@ -183,28 +188,47 @@ def _generate_json_payload(prompt: str) -> Any | None:
         model_names.append(FALLBACK_MODEL)
 
     for model_name in model_names:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "max_output_tokens": 8192,
-                "temperature": 0,
-                "response_mime_type": "application/json",
-            },
-        )
-        content = response.text
-        if not content:
-            print(f"[extractor] Empty Gemini batch response from {model_name}")
-            continue
+        try:
+            model = genai.GenerativeModel(model_name)
 
-        parsed = _parse_json_response(content, log_error=(model_name == model_names[-1]))
-        if parsed is not None:
-            if model_name != MODEL:
-                print(f"[extractor] Fallback model {model_name} returned valid JSON")
-            return parsed
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "max_output_tokens": 4096,
+                    "temperature": 0,
+                    "response_mime_type": "application/json",
+                },
+                request_options={
+                    "timeout": 120,  # 120 seconds
+                },
+            )
 
-        preview = content.strip()[:120].replace("\n", " ")
-        print(f"[extractor] {model_name} returned non-JSON, trying fallback. Preview: {preview!r}")
+            content = response.text
+
+            if not content:
+                print(f"[extractor] Empty response from {model_name}")
+                continue
+
+            parsed = _parse_json_response(
+                content,
+                log_error=(model_name == model_names[-1]),
+            )
+
+            if parsed is not None:
+                if model_name != MODEL:
+                    print(
+                        f"[extractor] Fallback model {model_name} returned valid JSON"
+                    )
+                return parsed
+
+            preview = content[:120].replace("\n", " ")
+            print(
+                f"[extractor] {model_name} returned non-JSON. "
+                f"Trying fallback. Preview: {preview!r}"
+            )
+
+        except Exception as e:
+            print(f"[extractor] Model {model_name} failed: {e}")
 
     return None
 
@@ -213,63 +237,87 @@ def extract_jobs_data(posts: list[dict]) -> list[dict]:
     if not posts:
         return []
 
-    prompt = _build_batch_prompt(posts)
+    all_jobs = []
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            _wait_for_rate_limit()
+    BATCH_SIZE = 10
 
-            parsed = _generate_json_payload(prompt)
-            if parsed is None:
-                return []
-            jobs_payload = _normalize_jobs_payload(parsed)
-            break
+    for batch_no, batch_posts in enumerate(chunked(posts, BATCH_SIZE), start=1):
+        print(
+            f"[extractor] Processing batch {batch_no} "
+            f"({len(batch_posts)} posts)"
+        )
 
-        except (google_exceptions.ResourceExhausted, google_exceptions.TooManyRequests):
-            if attempt < MAX_RETRIES:
-                wait = RETRY_DELAY * attempt
-                print(f"[extractor] 429 - retry {attempt}/{MAX_RETRIES} in {wait}s")
-                time.sleep(wait)
+        prompt = _build_batch_prompt(batch_posts)
+
+        jobs_payload = []
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                _wait_for_rate_limit()
+
+                parsed = _generate_json_payload(prompt)
+
+                if parsed is None:
+                    break
+
+                jobs_payload = _normalize_jobs_payload(parsed)
+                break
+
+            except (
+                google_exceptions.ResourceExhausted,
+                google_exceptions.TooManyRequests,
+            ):
+                if attempt < MAX_RETRIES:
+                    wait = RETRY_DELAY * attempt
+                    print(
+                        f"[extractor] 429 retry "
+                        f"{attempt}/{MAX_RETRIES} in {wait}s"
+                    )
+                    time.sleep(wait)
+                    continue
+
+                print("[extractor] 429 max retries hit")
+                break
+
+            except (
+                google_exceptions.DeadlineExceeded,
+                google_exceptions.InternalServerError,
+                google_exceptions.ServiceUnavailable,
+            ) as e:
+                if attempt < MAX_RETRIES:
+                    wait = RETRY_DELAY * attempt
+                    print(
+                        f"[extractor] Gemini retry "
+                        f"{attempt}/{MAX_RETRIES} in {wait}s: {e}"
+                    )
+                    time.sleep(wait)
+                    continue
+
+                print(f"[extractor] Batch failed: {e}")
+                break
+
+        for item in jobs_payload:
+            try:
+                source_index = int(item.get("source_index"))
+            except (TypeError, ValueError):
                 continue
-            print("[extractor] 429 - max retries hit, skipping batch")
-            return []
-        except (
-            google_exceptions.DeadlineExceeded,
-            google_exceptions.InternalServerError,
-            google_exceptions.ServiceUnavailable,
-        ) as e:
-            if attempt < MAX_RETRIES:
-                wait = RETRY_DELAY * attempt
-                print(f"[extractor] Gemini transient error - retry {attempt}/{MAX_RETRIES} in {wait}s: {e}")
-                time.sleep(wait)
+
+            if source_index < 0 or source_index >= len(batch_posts):
                 continue
-            print(f"[extractor] Gemini transient error - max retries hit: {e}")
-            return []
-        except google_exceptions.GoogleAPIError as e:
-            print(f"[extractor] Gemini API error: {e}")
-            return []
-        except (KeyError, IndexError, ValueError) as e:
-            print(f"[extractor] Parse error: {e}")
-            return []
-    else:
-        return []
 
-    jobs: list[dict] = []
-    for item in jobs_payload:
-        try:
-            source_index = int(item.get("source_index"))
-        except (TypeError, ValueError):
-            continue
+            if not _is_relevant_tech_job(item):
+                continue
 
-        if source_index < 0 or source_index >= len(posts):
-            continue
-        if not _is_relevant_tech_job(item):
-            continue
+            all_jobs.append(
+                _to_sheet_job(item, batch_posts[source_index])
+            )
 
-        jobs.append(_to_sheet_job(item, posts[source_index]))
+    print(
+        f"[extractor] Extracted {len(all_jobs)} jobs "
+        f"from {len(posts)} posts"
+    )
 
-    print(f"[extractor] Batch extracted {len(jobs)} jobs from {len(posts)} posts")
-    return jobs
+    return all_jobs
 
 
 def extract_job_data(post: dict) -> dict | None:
