@@ -15,10 +15,55 @@ def _env_bool(name: str, default: bool = False) -> bool:
 # --- Credentials ---
 LINKEDIN_EMAIL    = os.getenv("LINKEDIN_EMAIL")
 LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD")
+
+# Change only AI_PROVIDER to switch extraction providers.
+# Supported values: gemini | anthropic | openrouter | deepseek
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY")
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DEEPSEEK_API_KEY   = os.getenv("DEEPSEEK_API_KEY")
-GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY")
+
+AI_PROVIDERS = {
+    "gemini": {
+        "api_key": GEMINI_API_KEY,
+        "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+    },
+    "anthropic": {
+        "api_key": ANTHROPIC_API_KEY,
+        "model": os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+        "url": "https://api.anthropic.com/v1/messages",
+    },
+    "openrouter": {
+        "api_key": OPENROUTER_API_KEY,
+        "model": os.getenv(
+            "OPENROUTER_MODEL",
+            "google/gemini-3.1-flash-lite",
+        ),
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+    },
+    "deepseek": {
+        "api_key": DEEPSEEK_API_KEY,
+        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "url": "https://api.deepseek.com/chat/completions",
+    },
+}
+
+
+def get_ai_provider_config() -> dict:
+    provider = AI_PROVIDERS.get(AI_PROVIDER)
+    if provider is None:
+        supported = ", ".join(AI_PROVIDERS)
+        raise ValueError(
+            f"Unsupported AI_PROVIDER={AI_PROVIDER!r}. Choose one of: {supported}"
+        )
+    if not provider["api_key"]:
+        key_name = f"{AI_PROVIDER.upper()}_API_KEY"
+        raise ValueError(
+            f"AI_PROVIDER is {AI_PROVIDER!r}, but {key_name} is not configured."
+        )
+    return provider
 
 # Path to Google service account JSON
 GOOGLE_SA_JSON    = os.getenv("GOOGLE_SA_JSON", "service_account.json")
@@ -54,7 +99,6 @@ HEADLESS_BROWSER = _env_bool("HEADLESS_BROWSER", False)
 
 # Playwright timeouts in milliseconds.
 NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "60000"))
-FEED_WAIT_TIMEOUT = int(os.getenv("FEED_WAIT_TIMEOUT", "30000"))
 SELECTOR_WAIT_TIMEOUT = int(os.getenv("SELECTOR_WAIT_TIMEOUT", "20000"))
 LOGIN_WAIT_TIMEOUT = int(os.getenv("LOGIN_WAIT_TIMEOUT", "120000"))
 

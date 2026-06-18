@@ -35,7 +35,11 @@ DATE_FILTER=past-24h
 TIMEZONE=Asia/Kolkata
 DAILY_SHEET_TABS=true
 HEADLESS_BROWSER=true
+AI_PROVIDER=gemini
 ```
+
+Set the API key for the selected provider. To switch extraction providers later,
+change only `AI_PROVIDER` to `gemini`, `anthropic`, `openrouter`, or `deepseek`.
 
 Copy your Google service account JSON into the repo and set:
 

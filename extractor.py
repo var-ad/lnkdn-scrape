@@ -1,13 +1,16 @@
 """
 extractor.py
-Parse raw LinkedIn posts into structured job records via Gemini.
+Parse raw LinkedIn posts into structured job records via the configured AI provider.
 """
 
 import json
 import re
 import time
+from http.client import HTTPException
 from datetime import datetime
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
@@ -15,17 +18,19 @@ from google.api_core import exceptions as google_exceptions
 
 import config
 
-genai.configure(api_key=config.GEMINI_API_KEY)
-
-MODEL = "gemini-3.1-flash-lite"   # good for structured extraction, but can fallback to 2.0 if it fails to parse JSON
-FALLBACK_MODEL = "gemma-4-26B-A4B-it"
-
-RATE_LIMIT = 14        # stay under Gemini free-tier 15 req/min with buffer
+RATE_LIMIT = 14
 MAX_RETRIES = 3
-RETRY_DELAY = 5        # seconds between retries on 429
+RETRY_DELAY = 5
 POST_TEXT_LIMIT = 2500
+REQUEST_TIMEOUT = 120
 
 _request_times: list[float] = []
+
+
+class ProviderAPIError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _wait_for_rate_limit():
@@ -182,60 +187,126 @@ def chunked(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
+
+def _post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:500]
+        raise ProviderAPIError(
+            f"HTTP {e.code}: {body}",
+            retryable=e.code == 429 or e.code >= 500,
+        ) from e
+    except (URLError, TimeoutError, HTTPException) as e:
+        raise ProviderAPIError(str(e), retryable=True) from e
+    except json.JSONDecodeError as e:
+        raise ProviderAPIError("Provider returned invalid response JSON.") from e
+
+
+def _generate_gemini(prompt: str, provider: dict) -> str:
+    genai.configure(api_key=provider["api_key"])
+    model = genai.GenerativeModel(provider["model"])
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "max_output_tokens": 4096,
+            "temperature": 0,
+            "response_mime_type": "application/json",
+        },
+        request_options={"timeout": REQUEST_TIMEOUT},
+    )
+    return response.text or ""
+
+
+def _generate_anthropic(prompt: str, provider: dict) -> str:
+    response = _post_json(
+        provider["url"],
+        {
+            "x-api-key": provider["api_key"],
+            "anthropic-version": "2023-06-01",
+        },
+        {
+            "model": provider["model"],
+            "max_tokens": 4096,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    )
+    return "".join(
+        block.get("text", "")
+        for block in response.get("content", [])
+        if block.get("type") == "text"
+    )
+
+
+def _generate_openai_compatible(prompt: str, provider: dict) -> str:
+    payload = {
+        "model": provider["model"],
+        "max_tokens": 4096,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if config.AI_PROVIDER == "deepseek":
+        payload["thinking"] = {"type": "disabled"}
+
+    response = _post_json(
+        provider["url"],
+        {"Authorization": f"Bearer {provider['api_key']}"},
+        payload,
+    )
+    choices = response.get("choices") or []
+    if not choices:
+        return ""
+    return choices[0].get("message", {}).get("content") or ""
+
+
 def _generate_json_payload(prompt: str) -> Any | None:
-    model_names = [MODEL]
-    if FALLBACK_MODEL and FALLBACK_MODEL not in model_names:
-        model_names.append(FALLBACK_MODEL)
+    provider = config.get_ai_provider_config()
+    generators = {
+        "gemini": _generate_gemini,
+        "anthropic": _generate_anthropic,
+        "openrouter": _generate_openai_compatible,
+        "deepseek": _generate_openai_compatible,
+    }
 
-    for model_name in model_names:
-        try:
-            model = genai.GenerativeModel(model_name)
+    content = generators[config.AI_PROVIDER](prompt, provider)
+    if not content:
+        print(f"[extractor] Empty response from {config.AI_PROVIDER}")
+        return None
 
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "max_output_tokens": 4096,
-                    "temperature": 0,
-                    "response_mime_type": "application/json",
-                },
-                request_options={
-                    "timeout": 120,  # 120 seconds
-                },
-            )
+    return _parse_json_response(content)
 
-            content = response.text
 
-            if not content:
-                print(f"[extractor] Empty response from {model_name}")
-                continue
-
-            parsed = _parse_json_response(
-                content,
-                log_error=(model_name == model_names[-1]),
-            )
-
-            if parsed is not None:
-                if model_name != MODEL:
-                    print(
-                        f"[extractor] Fallback model {model_name} returned valid JSON"
-                    )
-                return parsed
-
-            preview = content[:120].replace("\n", " ")
-            print(
-                f"[extractor] {model_name} returned non-JSON. "
-                f"Trying fallback. Preview: {preview!r}"
-            )
-
-        except Exception as e:
-            print(f"[extractor] Model {model_name} failed: {e}")
-
-    return None
+def _is_retryable_google_error(error: Exception) -> bool:
+    return isinstance(
+        error,
+        (
+            google_exceptions.ResourceExhausted,
+            google_exceptions.TooManyRequests,
+            google_exceptions.DeadlineExceeded,
+            google_exceptions.InternalServerError,
+            google_exceptions.ServiceUnavailable,
+        ),
+    )
 
 
 def extract_jobs_data(posts: list[dict]) -> list[dict]:
     if not posts:
         return []
+
+    provider = config.get_ai_provider_config()
+    print(
+        f"[extractor] Provider: {config.AI_PROVIDER} "
+        f"(model: {provider['model']})"
+    )
 
     all_jobs = []
 
@@ -263,37 +334,22 @@ def extract_jobs_data(posts: list[dict]) -> list[dict]:
                 jobs_payload = _normalize_jobs_payload(parsed)
                 break
 
-            except (
-                google_exceptions.ResourceExhausted,
-                google_exceptions.TooManyRequests,
-            ):
-                if attempt < MAX_RETRIES:
+            except Exception as e:
+                retryable = (
+                    isinstance(e, ProviderAPIError) and e.retryable
+                ) or _is_retryable_google_error(e)
+                if retryable and attempt < MAX_RETRIES:
                     wait = RETRY_DELAY * attempt
                     print(
-                        f"[extractor] 429 retry "
-                        f"{attempt}/{MAX_RETRIES} in {wait}s"
-                    )
-                    time.sleep(wait)
-                    continue
-
-                print("[extractor] 429 max retries hit")
-                break
-
-            except (
-                google_exceptions.DeadlineExceeded,
-                google_exceptions.InternalServerError,
-                google_exceptions.ServiceUnavailable,
-            ) as e:
-                if attempt < MAX_RETRIES:
-                    wait = RETRY_DELAY * attempt
-                    print(
-                        f"[extractor] Gemini retry "
+                        f"[extractor] {config.AI_PROVIDER} retry "
                         f"{attempt}/{MAX_RETRIES} in {wait}s: {e}"
                     )
                     time.sleep(wait)
                     continue
 
-                print(f"[extractor] Batch failed: {e}")
+                print(
+                    f"[extractor] {config.AI_PROVIDER} batch failed: {e}"
+                )
                 break
 
         for item in jobs_payload:
@@ -318,8 +374,3 @@ def extract_jobs_data(posts: list[dict]) -> list[dict]:
     )
 
     return all_jobs
-
-
-def extract_job_data(post: dict) -> dict | None:
-    jobs = extract_jobs_data([post])
-    return jobs[0] if jobs else None

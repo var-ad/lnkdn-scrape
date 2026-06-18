@@ -19,37 +19,7 @@ import config
 # Each search result post card
 POST_CONTAINER = "div._7b2ee40b"  # update selector
 
-# Post body text — LinkedIn wraps text in span[dir=ltr] inside the update
-POST_TEXT_SEL    = "div.feed-shared-update-v2__description span[dir='ltr'], \
-                    div.feed-shared-inline-show-more-text span[dir='ltr'], \
-                    span.break-words span[dir='ltr']"
-
-# Poster name — actor component
-ACTOR_NAME_SEL   = "span.update-components-actor__name span[aria-hidden='true'], \
-                    span.feed-shared-actor__name, \
-                    a.update-components-actor__meta-link span[aria-hidden='true']"
-
-# Post timestamp
-POST_DATE_SEL    = "time, span.update-components-actor__sub-description time, \
-                    a.update-components-actor__sub-description-link"
-
-# Post permalink anchors
-POST_LINK_PATTERNS = ["/posts/", "activity", "ugcPost", "feed-hashtag"]
-
 SESSION_FILE = ".linkedin_session.json"
-
-
-def _normalize_post_url(card, href: str = "") -> str:
-    """Return a stable LinkedIn post URL for dedupe and sheet storage."""
-    urn = card.get_attribute("data-urn") or ""
-    match = re.search(r"urn:li:activity:\d+", href) or re.search(r"urn:li:activity:\d+", urn)
-    if match:
-        return f"https://linkedin.com/feed/update/{match.group(0)}/"
-
-    if href:
-        return href.split("?")[0]
-
-    return ""
 
 
 def _normalize_post_date(raw_date: str, date_filter: str = "") -> str:

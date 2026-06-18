@@ -42,7 +42,7 @@ def run(date_filter: str, dry_run: bool = False):
 
         # Polite inter-query delay to reduce LinkedIn rate-limit risk
         if i < len(config.SEARCH_QUERIES) - 1:
-            print(f"[main] Sleeping 8s before next query...")
+            print("[main] Sleeping 8s before next query...")
             time.sleep(8)
 
     print(f"\n{'='*60}")
